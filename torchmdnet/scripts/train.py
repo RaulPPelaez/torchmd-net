@@ -81,6 +81,10 @@ def get_args():
     parser.add_argument('--distance-influence', type=str, default='both', choices=['keys', 'values', 'both', 'none'], help='Where distance information is included inside the attention')
     parser.add_argument('--attn-activation', default='silu', choices=list(act_class_mapping.keys()), help='Attention activation function')
     parser.add_argument('--num-heads', type=int, default=8, help='Number of attention heads')
+    
+    ##tensornet
+    parser.add_argument('--num-linears-tensor', type=int, default=2, help='Number of linears in tensor mlp')
+    parser.add_argument('--num-linears-scalar', type=int, default=2, help='Number of linears in scalar mlps')
 
     # other args
     parser.add_argument('--derivative', default=False, type=bool, help='If true, take the derivative of the prediction w.r.t coordinates')
@@ -150,6 +154,7 @@ def main():
         callbacks=[early_stopping, checkpoint_callback],
         logger=[tb_logger, csv_logger],
         precision=args.precision,
+	gradient_clip_val=40,
     )
 
     trainer.fit(model, data)

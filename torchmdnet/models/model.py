@@ -54,6 +54,22 @@ def create_model(args, prior_model=None, mean=None, std=None):
             distance_influence=args["distance_influence"],
             **shared_args,
         )
+    elif args["model"] == "tensornet":
+        from torchmdnet.models.tensornet import TensorNetwork
+        is_equivariant = False
+        representation_model = TensorNetwork(
+            hidden_channels=args["embedding_dimension"],
+            num_linears_tensor=args["num_linears_tensor"],
+            num_linears_scalar=args["num_linears_scalar"],
+            num_layers=args["num_layers"],
+            num_rbf=args["num_rbf"],
+            rbf_type=args["rbf_type"],
+            cutoff_lower=args["cutoff_lower"],
+            cutoff_upper=args["cutoff_upper"],
+            max_num_neighbors=args["max_num_neighbors"],
+            trainable_rbf=args["trainable_rbf"],
+            max_z=args["max_z"],
+        )
     else:
         raise ValueError(f'Unknown architecture: {args["model"]}')
 
