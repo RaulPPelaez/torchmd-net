@@ -1,6 +1,7 @@
 import math
 from typing import Optional
 import torch
+from torch import Tensor
 from torch import nn
 import torch.nn.functional as F
 from torch_geometric.nn import MessagePassing
@@ -208,7 +209,7 @@ class Distance(nn.Module):
         self.return_vecs = return_vecs
         self.loop = loop
 
-    def forward(self, pos, batch):
+    def forward(self, pos: Tensor, batch: Tensor) -> tuple[Tensor, Tensor, Optional[Tensor]]:
         edge_index = radius_graph(
             pos,
             r=self.cutoff_upper,
