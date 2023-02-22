@@ -1,4 +1,6 @@
 from torch import nn
+from torch import Tensor
+from typing import Optional, Dict
 
 
 class BasePrior(nn.Module):
@@ -18,7 +20,7 @@ class BasePrior(nn.Module):
         """
         return {}
 
-    def pre_reduce(self, x, z, pos, batch, extra_args):
+    def pre_reduce(self, x: Tensor, z: Tensor, pos: Tensor, batch: Tensor, extra_args: Optional[Dict[str, Tensor]]) -> Tensor:
         r"""Pre-reduce method of the prior model.
 
         Args:
@@ -33,7 +35,7 @@ class BasePrior(nn.Module):
         """
         return x
 
-    def post_reduce(self, y, z, pos, batch, extra_args):
+    def post_reduce(self, y: Tensor, z: Tensor, pos: Tensor, batch: Tensor, extra_args: Optional[Dict[str, Tensor]]) -> Tensor:
         r"""Post-reduce method of the prior model.
 
         Args:
