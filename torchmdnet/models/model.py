@@ -59,8 +59,6 @@ def create_model(args, prior_model=None, mean=None, std=None):
         is_equivariant = False
         representation_model = TensorNetwork(
             hidden_channels=args["embedding_dimension"],
-            num_linears_tensor=args["num_linears_tensor"],
-            num_linears_scalar=args["num_linears_scalar"],
             num_layers=args["num_layers"],
             num_rbf=args["num_rbf"],
             rbf_type=args["rbf_type"],
@@ -91,7 +89,6 @@ def create_model(args, prior_model=None, mean=None, std=None):
         activation=args["activation"],
         reduce_op=args["reduce_op"],
     )
-
     # combine representation and output network
     model = TorchMD_Net(
         representation_model,
