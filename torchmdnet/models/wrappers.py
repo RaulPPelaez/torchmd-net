@@ -22,7 +22,7 @@ class BaseWrapper(nn.Module, metaclass=ABCMeta):
         self.model.reset_parameters()
 
     @abstractmethod
-    def forward(self, z, pos, batch=None):
+    def forward(self, z: Tensor, pos: Tensor, batch: Optional[Tensor] = None):
         return
 
 
