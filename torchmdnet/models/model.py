@@ -101,6 +101,7 @@ def create_model(args, prior_model=None, mean=None, std=None):
         std=std,
         derivative=args["derivative"],
     )
+    model = torch.jit.script(model)
     return model
 
 
