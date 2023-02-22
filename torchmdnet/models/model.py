@@ -217,6 +217,7 @@ class TorchMD_Net(nn.Module):
 
         assert z.dim() == 1 and z.dtype == torch.long
         batch = torch.zeros_like(z) if batch is None else batch
+        extra_args = {k: torch.tensor(v) for k, v in extra_args.items()} if extra_args is not None else extra_args
 
         if self.derivative:
             pos.requires_grad_(True)
