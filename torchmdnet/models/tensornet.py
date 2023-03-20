@@ -12,6 +12,7 @@ from torchmdnet.models.utils import (
 
 
 #this util creates a tensor from a vector, which will be the antisymmetric part Aij
+@torch.compile
 def vector_to_skewtensor(vector):
     N=vector.shape[0]
     eye = torch.eye(3, device=vector.device).unsqueeze(0).repeat(N, 1, 1)
@@ -20,7 +21,8 @@ def vector_to_skewtensor(vector):
     return tensor
 
 #this util creates a symmetric traceFULL tensor from a vector (by means of the outer product of the vector by itself)
-#it contributes to the scalar part Iij and the symmetric part Sij
+#it contributes to the scalar part Iij and the symmetric part Si
+@torch.compile
 def vector_to_symtensor(vector):
     tensor = torch.matmul(vector.unsqueeze(-1), vector.unsqueeze(-2)) ### ADDED: final unsqueeze to add the dimension I removed previously
     Iij = (tensor.diagonal(offset=0, dim1=-1, dim2=-2)).mean(-1)[...,None,None] * torch.eye(3,3, device=tensor.device)
@@ -28,7 +30,9 @@ def vector_to_symtensor(vector):
     tensor = Sij
     return tensor
 
-#this util decomposes an arbitrary tensor into Iij, Aij, Sij
+
+#this util decomposes an arbitrary tensor into Iij, Aij, Si
+@torch.compile
 def decompose_tensor(tensor):
     Iij = (tensor.diagonal(offset=0, dim1=-1, dim2=-2)).mean(-1)[...,None,None] * torch.eye(3,3, device=tensor.device) ### FIXED: repeat
     Aij = 0.5*(tensor-tensor.transpose(-2,-1))
@@ -36,6 +40,7 @@ def decompose_tensor(tensor):
     return Iij, Aij, Sij
 
 #this util modifies the tensor by adding 3 rotationally invariant functions (fijs) to Iij, Aij, Sij
+@torch.compile
 def new_radial_tensor(tensor, fij):
     new_tensor = ((fij[...,0] - fij[...,2]) * tensor.diagonal(offset=0, dim1=-1, dim2=-2).mean(-1))[...,None,None] * (
         torch.eye(3,3, device=tensor.device))
@@ -43,6 +48,7 @@ def new_radial_tensor(tensor, fij):
     new_tensor = new_tensor - 0.5 * (fij[...,1]-fij[...,2])[...,None,None] * tensor.transpose(-2,-1)
     return new_tensor
 
+@torch.compile
 def tensor_norm(tensor):
     return (tensor**2).sum((-2,-1))
 
@@ -64,7 +70,7 @@ class MyDistance(nn.Module):
         self.return_vecs = return_vecs
         self.loop = loop
 
-    def forward(self, pos: Tensor , batch: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+    def forward(self, pos: Tensor , batch: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
         edge_index = radius_graph(
             pos,
             r=self.cutoff_upper,
@@ -72,14 +78,13 @@ class MyDistance(nn.Module):
             loop=self.loop,
             max_num_neighbors=self.max_num_neighbors + 1,
         )
-
         # make sure we didn't miss any neighbors due to max_num_neighbors
-        assert not (
-            torch.unique(edge_index[0], return_counts=True)[1] > self.max_num_neighbors
-        ).any(), (
-            "The neighbor search missed some atoms due to max_num_neighbors being too low. "
-            "Please increase this parameter to include the maximum number of atoms within the cutoff."
-        )
+        # assert not (
+        #     torch.unique(edge_index[0], return_counts=True)[1] > self.max_num_neighbors
+        # ).any(), (
+        #     "The neighbor search missed some atoms due to max_num_neighbors being too low. "
+        #     "Please increase this parameter to include the maximum number of atoms within the cutoff."
+        # )
 
         edge_vec = pos[edge_index[0]] - pos[edge_index[1]]
 
@@ -151,11 +156,33 @@ class TensorNetwork(nn.Module):
             X = layer(X, edge_index, edge_weight, edge_attr)
         I, A, S = decompose_tensor(X)
         #I concatenate here the three ways to obtain scalars
-        s = torch.cat((tensor_norm(I),tensor_norm(A),tensor_norm(S)),dim=-1)
+        s = torch.cat((tensor_norm(I), tensor_norm(A), tensor_norm(S)), dim=-1)
         x = self.out_norm(s)
         x = self.act(self.extra_layer(x))
         return x, None, z, pos, batch
 
+def normalize_vec(edge_index, edge_vec):
+    mask = edge_index[0] != edge_index[1]
+    edge_vec[mask] = edge_vec[mask] / torch.norm(edge_vec[mask], dim=1).unsqueeze(1)
+    return edge_vec
+
+@torch.compile
+def IAS(linears_tensor, Iij, Aij, Sij):
+    Iij = linears_tensor[0](Iij.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
+    Aij = linears_tensor[1](Aij.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
+    Sij = linears_tensor[2](Sij.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
+    return Iij, Aij, Sij
+
+@torch.compile
+def create_edge_tensor(cutoff, distance_proj, edge_weight, edge_attr, edge_vec):
+    C = cutoff(edge_weight)
+    W1 = (distance_proj[0](edge_attr)) * C.view(-1,1)
+    W2 = (distance_proj[1](edge_attr)) * C.view(-1,1)
+    W3 = (distance_proj[2](edge_attr)) * C.view(-1,1)
+    edge_tensor = W1[...,None,None] * (vector_to_skewtensor(edge_vec)[:,None,:,:])
+    edge_tensor = edge_tensor + W2[...,None,None] * vector_to_symtensor(edge_vec)[:,None,:,:]
+    edge_tensor = edge_tensor + W3[...,None,None] * torch.eye(3,3, device=edge_vec.device)[None,None,:,:]
+    return edge_tensor
 
 class TensorNeighborEmbedding(MessagePassing):
     def __init__(
@@ -173,12 +200,13 @@ class TensorNeighborEmbedding(MessagePassing):
         self.hidden_channels = hidden_channels
         self.num_linears_tensor = num_linears_tensor
         self.num_linears_scalar = num_linears_scalar
-        self.distance_proj1 = nn.Linear(num_rbf, hidden_channels)
-        self.distance_proj2 = nn.Linear(num_rbf, hidden_channels)
-        self.distance_proj3 = nn.Linear(num_rbf, hidden_channels)
+        self.distance_proj = nn.ModuleList()
+        self.distance_proj.append(nn.Linear(num_rbf, hidden_channels))
+        self.distance_proj.append(nn.Linear(num_rbf, hidden_channels))
+        self.distance_proj.append(nn.Linear(num_rbf, hidden_channels))
         self.cutoff = CosineCutoff(cutoff_lower, cutoff_upper)
         self.max_z = max_z
-        self.emb = torch.nn.Embedding(max_z, hidden_channels)
+        self.emb = torch.compile(torch.nn.Embedding(max_z, hidden_channels))
         self.emb2 = nn.Linear(2*hidden_channels,hidden_channels)
         self.act = nn.SiLU()
         self.linears_tensor = nn.ModuleList()
@@ -190,34 +218,26 @@ class TensorNeighborEmbedding(MessagePassing):
         for _ in range(num_linears_scalar-1):
             linear = nn.Linear(2*hidden_channels, 3*hidden_channels, bias=True)
             self.linears_scalar.append(linear)
-        self.init_norm = nn.LayerNorm(hidden_channels)
+        self.init_norm = torch.compile(nn.LayerNorm(hidden_channels))
 
-
+    @torch.compile
     def forward(self, z: Tensor, edge_index: Tensor, edge_weight: Tensor, edge_vec: Tensor, edge_attr: Tensor) -> Tensor:
         Z = self.emb(z)
-        C = self.cutoff(edge_weight)
-        W1 = (self.distance_proj1(edge_attr)) * C.view(-1,1)
-        W2 = (self.distance_proj2(edge_attr)) * C.view(-1,1)
-        W3 = (self.distance_proj3(edge_attr)) * C.view(-1,1)
-        mask = edge_index[0] != edge_index[1]
-        edge_vec[mask] = edge_vec[mask] / torch.norm(edge_vec[mask], dim=1).unsqueeze(1)
-        edge_tensor = W1[...,None,None] * (vector_to_skewtensor(edge_vec)[:,None,:,:])
-        edge_tensor = edge_tensor + W2[...,None,None] * vector_to_symtensor(edge_vec)[:,None,:,:]
-        edge_tensor = edge_tensor + W3[...,None,None] * torch.eye(3,3, device=edge_vec.device)[None,None,:,:]
+        edge_vec = normalize_vec(edge_index, edge_vec)
+        edge_tensor = create_edge_tensor(self.cutoff, self.distance_proj, edge_weight, edge_attr, edge_vec)
         # propagate_type: (Z: Tensor, edge_tensor: Tensor)
         X = self.propagate(edge_index, Z=Z, edge_tensor=edge_tensor, size=None)
         Iij, Aij, Sij = decompose_tensor(X)
         norm = tensor_norm(X)
         norm = self.init_norm(norm)
-        Iij = self.linears_tensor[0](Iij.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
-        Aij = self.linears_tensor[1](Aij.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
-        Sij = self.linears_tensor[2](Sij.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
+        Iij, Aij, Sij = IAS(self.linears_tensor, Iij, Aij, Sij)
         norm = self.act(self.linears_scalar[0](norm))
         norm = self.act(self.linears_scalar[1](norm))
         X = Iij + Aij + Sij
         X = new_radial_tensor(X,norm.reshape(norm.shape[0],self.hidden_channels,3))
         return X
 
+    @torch.compile
     def message(self, Z_i: Tensor, Z_j: Tensor, edge_tensor: Tensor):
         Zij = self.emb2(torch.cat((Z_i,Z_j),dim=-1))
         msg = Zij[...,None,None]*(edge_tensor)
@@ -255,6 +275,7 @@ class TensorMessage(MessagePassing):
         self.linears_tensor.append(nn.Linear(hidden_channels, hidden_channels, bias=False))
         self.act = nn.SiLU()
 
+    @torch.compile
     def forward(self, X: Tensor, edge_index: Tensor, edge_weight: Tensor, edge_attr: Tensor) -> Tensor:
         C = self.cutoff(edge_weight)
         for i,linear in enumerate(self.linears):
@@ -283,7 +304,7 @@ class TensorMessage(MessagePassing):
         dX = dX + torch.matmul(dX,dX)
         X = X + dX
         return X
-
+    @torch.compile
     def message(self, Y_j: Tensor, edge_attr: Tensor) -> Tensor:
         msg = new_radial_tensor(Y_j, edge_attr)
         return msg

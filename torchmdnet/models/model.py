@@ -89,6 +89,7 @@ def create_model(args, prior_model=None, mean=None, std=None):
         activation=args["activation"],
         reduce_op=args["reduce_op"],
     )
+
     # combine representation and output network
     model = TorchMD_Net(
         representation_model,
@@ -98,7 +99,7 @@ def create_model(args, prior_model=None, mean=None, std=None):
         std=std,
         derivative=args["derivative"],
     )
-    model = torch.jit.script(model)
+#    model = torch.jit.script(model)
     return model
 
 
@@ -197,7 +198,7 @@ class TorchMD_Net(nn.Module):
         self.reset_parameters()
 
     def reset_parameters(self):
-        self.representation_model.reset_parameters()
+        #self.representation_model.reset_parameters()
         self.output_model.reset_parameters()
         if self.prior_model is not None:
             for prior in self.prior_model:
@@ -215,7 +216,7 @@ class TorchMD_Net(nn.Module):
 
         assert z.dim() == 1 and z.dtype == torch.long
         batch = torch.zeros_like(z) if batch is None else batch
-        extra_args = {k: torch.tensor(v) for k, v in extra_args.items()} if extra_args is not None else extra_args
+#        extra_args = {k: torch.tensor(v) for k, v in extra_args.items()} if extra_args is not None else extra_args
 
         if self.derivative:
             pos.requires_grad_(True)
@@ -252,6 +253,7 @@ class TorchMD_Net(nn.Module):
 
         # compute gradients with respect to coordinates
         if self.derivative:
+
             grad_outputs: List[Optional[torch.Tensor]] = [torch.ones_like(y)]
             dy = grad(
                 [y],

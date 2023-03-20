@@ -167,7 +167,7 @@ class CosineCutoff(nn.Module):
         super(CosineCutoff, self).__init__()
         self.cutoff_lower = cutoff_lower
         self.cutoff_upper = cutoff_upper
-
+    @torch.compile
     def forward(self, distances):
         if self.cutoff_lower > 0:
             cutoffs = 0.5 * (
