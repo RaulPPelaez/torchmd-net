@@ -1,5 +1,5 @@
 import math
-from typing import Optional
+from typing import Optional, Tuple
 import torch
 from torch import Tensor
 from torch import nn
@@ -167,7 +167,7 @@ class CosineCutoff(nn.Module):
         super(CosineCutoff, self).__init__()
         self.cutoff_lower = cutoff_lower
         self.cutoff_upper = cutoff_upper
-
+    @torch.compile
     def forward(self, distances):
         if self.cutoff_lower > 0:
             cutoffs = 0.5 * (
@@ -209,7 +209,7 @@ class Distance(nn.Module):
         self.return_vecs = return_vecs
         self.loop = loop
 
-    def forward(self, pos: Tensor, batch: Tensor) -> tuple[Tensor, Tensor, Optional[Tensor]]:
+    def forward(self, pos: Tensor, batch: Tensor) -> Tuple[Tensor, Tensor, Optional[Tensor]]:
         edge_index = radius_graph(
             pos,
             r=self.cutoff_upper,

@@ -13,7 +13,7 @@ class MD17(InMemoryDataset):
     raw_url = "http://www.quantum-machine.org/gdml/data/npz/"
 
     molecule_files = dict(
-        aspirin="aspirin_dft.npz",
+        aspirin="md17_aspirin.npz",
         benzene="benzene_old_dft.npz",
         ethanol="ethanol_dft.npz",
         malonaldehyde="malonaldehyde_dft.npz",
