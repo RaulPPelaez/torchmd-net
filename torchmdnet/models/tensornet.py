@@ -10,6 +10,15 @@ from torchmdnet.models.utils import (
     act_class_mapping,
 )
 
+enable_nvtx = False
+
+def tensor_range_push(name):
+    if enable_nvtx:
+        torch.cuda.nvtx.range_push(name)
+
+def tensor_range_pop():
+    if enable_nvtx:
+        torch.cuda.nvtx.range_pop()
 
 #this util creates a tensor from a vector, which will be the antisymmetric part Aij
 @torch.compile
@@ -210,9 +219,9 @@ class TensorNeighborEmbedding(MessagePassing):
         self.emb2 = nn.Linear(2*hidden_channels,hidden_channels)
         self.act = nn.SiLU()
         self.linears_tensor = nn.ModuleList()
-        self.linears_tensor.append(nn.Linear(hidden_channels, hidden_channels, bias=False))
-        self.linears_tensor.append(nn.Linear(hidden_channels, hidden_channels, bias=False))
-        self.linears_tensor.append(nn.Linear(hidden_channels, hidden_channels, bias=False))
+        self.linears_tensor.append(torch.compile(nn.Linear(hidden_channels, hidden_channels, bias=False)))
+        self.linears_tensor.append(torch.compile(nn.Linear(hidden_channels, hidden_channels, bias=False)))
+        self.linears_tensor.append(torch.compile(nn.Linear(hidden_channels, hidden_channels, bias=False)))
         self.linears_scalar = nn.ModuleList()
         self.linears_scalar.append(nn.Linear(hidden_channels, 2*hidden_channels, bias=True))
         for _ in range(num_linears_scalar-1):
@@ -220,8 +229,9 @@ class TensorNeighborEmbedding(MessagePassing):
             self.linears_scalar.append(linear)
         self.init_norm = torch.compile(nn.LayerNorm(hidden_channels))
 
-    @torch.compile
+#    @torch.compile
     def forward(self, z: Tensor, edge_index: Tensor, edge_weight: Tensor, edge_vec: Tensor, edge_attr: Tensor) -> Tensor:
+        tensor_range_push("TensorNeighborEmbedding")
         Z = self.emb(z)
         edge_vec = normalize_vec(edge_index, edge_vec)
         edge_tensor = create_edge_tensor(self.cutoff, self.distance_proj, edge_weight, edge_attr, edge_vec)
@@ -235,6 +245,7 @@ class TensorNeighborEmbedding(MessagePassing):
         norm = self.act(self.linears_scalar[1](norm))
         X = Iij + Aij + Sij
         X = new_radial_tensor(X,norm.reshape(norm.shape[0],self.hidden_channels,3))
+        tensor_range_pop()
         return X
 
     @torch.compile
@@ -277,6 +288,7 @@ class TensorMessage(MessagePassing):
 
     @torch.compile
     def forward(self, X: Tensor, edge_index: Tensor, edge_weight: Tensor, edge_attr: Tensor) -> Tensor:
+        tensor_range_push("TensorMessage")
         C = self.cutoff(edge_weight)
         for i,linear in enumerate(self.linears):
             edge_attr = self.act(linear(edge_attr))
@@ -303,6 +315,7 @@ class TensorMessage(MessagePassing):
         dX = Iij + Aij + Sij
         dX = dX + torch.matmul(dX,dX)
         X = X + dX
+        tensor_range_pop()
         return X
     @torch.compile
     def message(self, Y_j: Tensor, edge_attr: Tensor) -> Tensor:
