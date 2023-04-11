@@ -1,6 +1,7 @@
 import math
 from typing import Optional, Tuple
 import torch
+import torch._dynamo
 from torch import Tensor
 from torch import nn
 import torch.nn.functional as F
@@ -145,12 +146,14 @@ class ExpNormalSmearing(nn.Module):
         self.means.data.copy_(means)
         self.betas.data.copy_(betas)
 
+    @torch._dynamo.skip
     def forward(self, dist):
         dist = dist.unsqueeze(-1)
         return self.cutoff_fn(dist) * torch.exp(
             -self.betas
             * (torch.exp(self.alpha * (-dist + self.cutoff_lower)) - self.means) ** 2
         )
+
 
 
 class ShiftedSoftplus(nn.Module):
@@ -167,7 +170,7 @@ class CosineCutoff(nn.Module):
         super(CosineCutoff, self).__init__()
         self.cutoff_lower = cutoff_lower
         self.cutoff_upper = cutoff_upper
-    @torch.compile
+    @torch._dynamo.skip
     def forward(self, distances):
         if self.cutoff_lower > 0:
             cutoffs = 0.5 * (
@@ -192,7 +195,8 @@ class CosineCutoff(nn.Module):
             cutoffs = cutoffs * (distances < self.cutoff_upper).float()
             return cutoffs
 
-
+torch._dynamo.disallow_in_graph(ExpNormalSmearing.forward)
+torch._dynamo.disallow_in_graph(CosineCutoff.forward)
 class Distance(nn.Module):
     def __init__(
         self,
