@@ -3,7 +3,7 @@ import pytest
 import torch
 import torch.jit
 import numpy as np
-from torchmdnet.models.utils import Distance, OptimizedDistance
+from torchmdnet.models.utils import Distance, OptimizedDistance, CUDAGraphModule
 
 
 def sort_neighbors(neighbors, deltas, distances):
@@ -502,21 +502,8 @@ def test_cuda_graph_compatible(
     )
     batch.to(device)
 
-    graph = torch.cuda.CUDAGraph()
-    s = torch.cuda.Stream()
-    s.wait_stream(torch.cuda.current_stream())
-    # Warm up
-    with torch.cuda.stream(s):
-        for _ in range(10):
-            neighbors, distances, distance_vecs = nl(pos, batch)
-    torch.cuda.synchronize()
-    # Capture
-    with torch.cuda.graph(graph):
-        neighbors, distances, distance_vecs = nl(pos, batch)
-    neighbors.fill_(0)
-    graph.replay()
-    torch.cuda.synchronize()
-
+    nl = CUDAGraphModule(nl)
+    neighbors, distances, distance_vecs = nl(pos, batch)
     neighbors = neighbors.cpu().detach().numpy()
     distance_vecs = distance_vecs.cpu().detach().numpy()
     distances = distances.cpu().detach().numpy()

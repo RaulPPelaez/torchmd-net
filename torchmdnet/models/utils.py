@@ -79,6 +79,53 @@ class NeighborEmbedding(MessagePassing):
         return x_j * W
 
 
+
+class CUDAGraphModule(torch.nn.Module):
+
+    def __init__(self, module, fallback_to_eager = False):
+        super().__init__()
+        """ This wrapper captures the module into a CUDA graph, the forward method copies the input to static tensors and replays the graph
+        Parameters
+        ----------
+        module : torch.nn.Module
+            The module to be captured into a CUDA graph
+        fallback_to_eager : bool
+            If true, if graph capture fails the module will simply call the module instead of raising an exception
+        """
+        self.module = module
+        self.static_input = {}
+        self.static_output = {}
+        self.graph = None
+        self.fallback_to_eager = fallback_to_eager
+        self.use_graph = True
+
+    def forward(self, *args, **kwargs):
+        if self.graph is None and self.use_graph:
+            self.graph = torch.cuda.CUDAGraph()
+            self.static_input = {i: arg.detach().clone() for i, arg in enumerate(args)}
+            self.static_input.update( {k: v.detach().clone() for k, v in kwargs.items()})
+            self.static_output = self.module(*[v for k, v in sorted(self.static_input.items())])
+            try:
+                with torch.cuda.stream(torch.cuda.current_stream()):
+                    with torch.cuda.graph(self.graph):
+                        self.static_output = self.module(*[v for k, v in sorted(self.static_input.items())])
+            except RuntimeError as e:
+                if self.fallback_to_eager:
+                    warnings.warn("Graph capture failed, falling back to eager execution")
+                    self.use_graph = False
+                else:
+                    raise e
+        if self.graph is not None and self.use_graph:
+            # copy inputs to static_input:
+            for i, arg in enumerate(args):
+                self.static_input[i].copy_(arg)
+            for k, v in kwargs.items():
+                self.static_input[k].copy_(v)
+            self.graph.replay()
+            return self.static_output
+        else:
+            return self.module(*args, **kwargs)
+
 class OptimizedDistance(torch.nn.Module):
 
     def __init__(

@@ -1,8 +1,9 @@
 from os.path import join, exists
 from pytest import mark, raises
+import pytest
 import torch
 from torchmdnet.utils import make_splits
-
+from torchmdnet.models.utils import CUDAGraphModule
 
 def sum_lengths(*args):
     return sum(map(len, args))
@@ -77,3 +78,41 @@ def test_make_splits_errors():
         make_splits(100, None, None, 5, 1234)
     with raises(AssertionError):
         make_splits(100, 60, 60, None, 1234)
+
+
+def test_cuda_graph_module():
+    # Skip if CUDA is not available
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA not available")
+    class GraphableModule(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            pass
+        def forward(self, x):
+            return 2*x
+    module = GraphableModule()
+    x = torch.randn(10, requires_grad=True, device="cuda")
+    y = module(x)
+    graph_module = CUDAGraphModule(module)
+    ygraph = graph_module(x)
+    assert torch.allclose(ygraph, y)
+
+
+
+def test_cuda_graph_module_with_fallback():
+    # Skip if CUDA is not available
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA not available")
+    class UnGraphableModule(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            pass
+        def forward(self, x):
+            max_val = torch.max(x).cpu()
+            torch.cuda.synchronize()
+            return x*max_val
+    module = UnGraphableModule()
+    x = torch.randn(10, requires_grad=True, device='cuda')
+    y = module(x)
+    graph_module = CUDAGraphModule(module, fallback_to_eager=True)
+    assert torch.allclose(graph_module(x), y)
