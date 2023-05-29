@@ -82,7 +82,7 @@ class NeighborEmbedding(MessagePassing):
 
 class CUDAGraphModule(torch.nn.Module):
 
-    def __init__(self, module, fallback_to_eager = False):
+    def __init__(self, module, fallback_to_eager = True):
         super().__init__()
         """ This wrapper captures the module into a CUDA graph, the forward method copies the input to static tensors and replays the graph
         Parameters

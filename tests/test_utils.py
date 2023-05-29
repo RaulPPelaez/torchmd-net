@@ -93,7 +93,7 @@ def test_cuda_graph_module():
     module = GraphableModule()
     x = torch.randn(10, requires_grad=True, device="cuda")
     y = module(x)
-    graph_module = CUDAGraphModule(module)
+    graph_module = CUDAGraphModule(module, fallback_to_eager=False)
     ygraph = graph_module(x)
     assert torch.allclose(ygraph, y)
 
