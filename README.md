@@ -86,6 +86,10 @@ CUDA_VISIBLE_DEVICES=0,1 torchmd-train --conf torchmd-net/examples/ET-QM9.yaml.y
 - We observe a 50x decrease in performance when mixing nodes with different GPU architectures (tested with RTX 2080 Ti and RTX 3090).
 
 
+## Advanced Usage
+
+### 
+
 ## Cite
 If you use TorchMD-NET in your research, please cite the following papers:
 

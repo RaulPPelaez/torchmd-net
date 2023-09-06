@@ -10,6 +10,36 @@ from lightning import LightningModule
 from torchmdnet.models.model import create_model, load_model
 
 
+
+class LossComputer:
+
+    def __init__(self):
+        pass
+
+    def compute_loss(self, y_list, neg_dy_list, batch, loss_fn, stage):
+        """ Computes the loss for the predicted value and the negative derivative (if available) using the provided loss function. The loss computation takes into account all tensors in the outputs. """
+
+        if "y" in batch and batch.y.ndim == 1:
+            batch.y = batch.y.unsqueeze(1)
+        if "y" in batch and batch.y.ndim == 2:
+            batch.y = batch.y.unsqueeze(0).expand(len(y_list), -1, -1)
+        if "neg_dy" in batch and batch.neg_dy.ndim == 2:
+            batch.neg_dy = batch.neg_dy.unsqueeze(0).expand(len(neg_dy_list), -1, -1)
+        loss_y, loss_neg_dy = torch.zeros(len(y_list)), torch.zeros(len(neg_dy_list))
+        i = 0
+        for (y, batch_y), (neg_dy, batch_neg_dy) in zip(zip(y_list, batch.y), zip(neg_dy_list, batch.neg_dy)):
+            if "neg_dy" in batch and neg_dy is not None:
+                loss_neg_dy[i] = loss_fn(neg_dy, batch_neg_dy)
+            if "y" in batch:
+                loss_y[i] = loss_fn(y, batch_y)
+            i += 1
+
+        loss_y = loss_y.mean()
+        loss_neg_dy = loss_neg_dy.mean()
+        return loss_y, loss_neg_dy
+
+
+
 class LNNP(LightningModule):
     """
     Lightning wrapper for the Neural Network Potentials in TorchMD-Net.
@@ -35,6 +65,7 @@ class LNNP(LightningModule):
 
         # initialize loss collection
         self.losses = None
+        self.loss_compute = LossComputer()
         self._reset_losses_dict()
 
     def configure_optimizers(self):
@@ -97,15 +128,13 @@ class LNNP(LightningModule):
         # Returns:
         #   loss_y: loss for the predicted value
         #   loss_neg_y: loss for the predicted negative derivative
-        loss_y, loss_neg_y = 0.0, 0.0
+        loss_y, loss_neg_y = self.loss_compute.compute_loss(y, neg_y, batch, loss_fn, stage)
         loss_name = loss_fn.__name__
         if self.hparams.derivative and "neg_dy" in batch:
-            loss_neg_y = loss_fn(neg_y, batch.neg_dy)
             loss_neg_y = self._update_loss_with_ema(
                 stage, "neg_dy", loss_name, loss_neg_y
             )
         if "y" in batch:
-            loss_y = loss_fn(y, batch.y)
             loss_y = self._update_loss_with_ema(stage, "y", loss_name, loss_y)
         return {"y": loss_y, "neg_dy": loss_neg_y}
 
@@ -153,14 +182,13 @@ class LNNP(LightningModule):
                 s=batch.s if self.hparams.spin else None,
                 extra_args=extra_args,
             )
+        assert len(y) == len(neg_dy)
         if self.hparams.derivative and "y" not in batch:
             # "use" both outputs of the model's forward function but discard the first
             # to only use the negative derivative and avoid 'Expected to have finished reduction
             # in the prior iteration before starting a new one.', which otherwise get's
             # thrown because of setting 'find_unused_parameters=False' in the DDPPlugin
-            neg_dy = neg_dy + y.sum() * 0
-        if "y" in batch and batch.y.ndim == 1:
-            batch.y = batch.y.unsqueeze(1)
+            neg_dy = [ndy + y[i].sum() * 0 for i,ndy in enumerate(neg_dy)]
         for loss_fn in loss_fn_list:
             step_losses = self._compute_losses(y, neg_dy, batch, loss_fn, stage)
             total_loss = (

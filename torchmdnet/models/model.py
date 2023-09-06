@@ -1,5 +1,6 @@
+from abc import ABCMeta
 import re
-from typing import Optional, List, Tuple, Dict
+from typing import Optional, List, Tuple, Dict, Union
 import torch
 from torch.autograd import grad
 from torch import nn, Tensor
@@ -103,14 +104,11 @@ def create_model(args, prior_model=None, mean=None, std=None):
         reduce_op=args["reduce_op"],
         dtype=dtype,
     )
-
+    head_model = SingleOutputHeadModel(output_model, prior_model, mean, std, dtype=dtype)
     # combine representation and output network
     model = TorchMD_Net(
         representation_model,
-        output_model,
-        prior_model=prior_model,
-        mean=mean,
-        std=std,
+        head_model,
         derivative=args["derivative"],
         dtype=dtype,
     )
@@ -138,6 +136,18 @@ def load_model(filepath, args=None, device="cpu", **kwargs):
     if 'prior_model.atomref.weight' in state_dict:
         state_dict['prior_model.0.atomref.weight'] = state_dict['prior_model.atomref.weight']
         del state_dict['prior_model.atomref.weight']
+    # Add prefix "head_model." to keys in state_dict to match the new model structure for compatibility
+    # with checkpoints created with older versions of TorchMD-Net.
+    # List of main keys to look for
+    keys_to_update = ["mean", "std", "output_model", "prior_model"]
+
+    # For each main key, if any state_dict key starts with that main key,
+    # prepend "head_model." to it
+    for main_key in keys_to_update:
+        subkeys = [k for k in state_dict if k.startswith(main_key)]
+        for subkey in subkeys:
+            state_dict["head_model." + subkey] = state_dict[subkey]
+            del state_dict[subkey]
     model.load_state_dict(state_dict)
     return model.to(device)
 
@@ -176,21 +186,142 @@ def create_prior_models(args, dataset=None):
     return prior_models
 
 
+# class TorchMD_Net(nn.Module):
+#     """The  TorchMD_Net class  combines a  given representation  model
+#     (such as  the equivariant transformer),  an output model  (such as
+#     the scalar output  module) and a prior model (such  as the atomref
+#     prior), producing a  Module that takes as input a  series of atoms
+#     features  and  outputs  a  scalar   value  (i.e  energy  for  each
+#     batch/molecule) and,  derivative is True, the  negative of  its derivative
+#     with respect to the positions (i.e forces for each atom).
+
+#     """
+#     def __init__(
+#         self,
+#         representation_model,
+#         output_model,
+#         prior_model=None,
+#         mean=None,
+#         std=None,
+#         derivative=False,
+#         dtype=torch.float32,
+#     ):
+#         super(TorchMD_Net, self).__init__()
+#         self.representation_model = representation_model.to(dtype=dtype)
+#         self.output_model = output_model.to(dtype=dtype)
+
+#         if not output_model.allow_prior_model and prior_model is not None:
+#             prior_model = None
+#             rank_zero_warn(
+#                 (
+#                     "Prior model was given but the output model does "
+#                     "not allow prior models. Dropping the prior model."
+#                 )
+#             )
+#         if isinstance(prior_model, priors.base.BasePrior):
+#             prior_model = [prior_model]
+#         self.prior_model = None if prior_model is None else torch.nn.ModuleList(prior_model).to(dtype=dtype)
+
+#         self.derivative = derivative
+
+#         mean = torch.scalar_tensor(0) if mean is None else mean
+#         self.register_buffer("mean", mean.to(dtype=dtype))
+#         std = torch.scalar_tensor(1) if std is None else std
+#         self.register_buffer("std", std.to(dtype=dtype))
+
+#         self.reset_parameters()
+
+#     def reset_parameters(self):
+#         self.representation_model.reset_parameters()
+#         self.output_model.reset_parameters()
+#         if self.prior_model is not None:
+#             for prior in self.prior_model:
+#                 prior.reset_parameters()
+
+#     def forward(
+#         self,
+#         z: Tensor,
+#         pos: Tensor,
+#         batch: Optional[Tensor] = None,
+#         q: Optional[Tensor] = None,
+#         s: Optional[Tensor] = None,
+#         extra_args: Optional[Dict[str, Tensor]] = None
+#     ) -> Tuple[Tensor, Optional[Tensor]]:
+#         """Compute the output of the model.
+#         Args:
+#             z (Tensor): Atomic numbers of the atoms in the molecule. Shape (N,).
+#             pos (Tensor): Atomic positions in the molecule. Shape (N, 3).
+#             batch (Tensor, optional): Batch indices for the atoms in the molecule. Shape (N,).
+#             q (Tensor, optional): Atomic charges in the molecule. Shape (N,).
+#             s (Tensor, optional): Atomic spins in the molecule. Shape (N,).
+#             extra_args (Dict[str, Tensor], optional): Extra arguments to pass to the prior model.
+#         """
+
+#         assert z.dim() == 1 and z.dtype == torch.long
+#         batch = torch.zeros_like(z) if batch is None else batch
+
+#         if self.derivative:
+#             pos.requires_grad_(True)
+
+#         # run the potentially wrapped representation model
+#         x, v, z, pos, batch = self.representation_model(z, pos, batch, q=q, s=s)
+
+#         # apply the output network
+#         x = self.output_model.pre_reduce(x, v, z, pos, batch)
+
+#         # scale by data standard deviation
+#         if self.std is not None:
+#             x = x * self.std
+
+#         # apply atom-wise prior model
+#         if self.prior_model is not None:
+#             for prior in self.prior_model:
+#                 x = prior.pre_reduce(x, z, pos, batch, extra_args)
+
+#         # aggregate atoms
+#         x = self.output_model.reduce(x, batch)
+
+#         # shift by data mean
+#         if self.mean is not None:
+#             x = x + self.mean
+
+#         # apply output model after reduction
+#         y = self.output_model.post_reduce(x)
+
+#         # apply molecular-wise prior model
+#         if self.prior_model is not None:
+#             for prior in self.prior_model:
+#                 y = prior.post_reduce(y, z, pos, batch, extra_args)
+
+#         # compute gradients with respect to coordinates
+#         if self.derivative:
+#             grad_outputs: List[Optional[torch.Tensor]] = [torch.ones_like(y)]
+#             dy = grad(
+#                 [y],
+#                 [pos],
+#                 grad_outputs=grad_outputs,
+#                 create_graph=True,
+#                 retain_graph=True,
+#             )[0]
+#             if dy is None:
+#                 raise RuntimeError("Autograd returned None for the force prediction.")
+
+#             return y, -dy
+#         # TODO: return only `out` once Union typing works with TorchScript (https://github.com/pytorch/pytorch/pull/53180)
+#         return y, None
+
+
 class TorchMD_Net(nn.Module):
-    """The  TorchMD_Net class  combines a  given representation  model
-    (such as  the equivariant transformer),  an output model  (such as
-    the scalar output  module) and a prior model (such  as the atomref
-    prior), producing a  Module that takes as input a  series of atoms
-    features  and  outputs  a  scalar   value  (i.e  energy  for  each
-    batch/molecule) and,  derivative is True, the  negative of  its derivative
-    with respect to the positions (i.e forces for each atom).
+    """ This class is similar to TorchMD_Net, but it returns a list of tensors instead of a single tensor.
+        The derivative of each tensor is returned as well based on a boolean derivative flag for each output.
+        The model is constructed by combining a given representation model (such as the equivariant transformer) and a head model, which takes the per-atom features of the representation model and outputs a list of tensors with either per-atom or per-molecule features.
 
     """
+
     def __init__(
         self,
         representation_model,
-        output_model,
-        prior_model=None,
+        head_model,
         mean=None,
         std=None,
         derivative=False,
@@ -198,6 +329,74 @@ class TorchMD_Net(nn.Module):
     ):
         super(TorchMD_Net, self).__init__()
         self.representation_model = representation_model.to(dtype=dtype)
+        self.head_model = head_model.to(dtype=dtype)
+        self.derivative = derivative
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        self.representation_model.reset_parameters()
+        self.head_model.reset_parameters()
+
+    def forward(self,
+                z: Tensor,
+                pos: Tensor,
+                batch: Optional[Tensor] = None,
+                q: Optional[Tensor] = None,
+                s: Optional[Tensor] = None,
+                extra_args: Optional[Dict[str, Tensor]] = None
+                ) -> Union[Tuple[List[Tensor], List[Optional[Tensor]]], Tuple[Tensor, Optional[Tensor]]]:
+        """Compute the output of the model.
+        Args:
+            z (Tensor): Atomic numbers of the atoms. Shape (N,).
+            pos (Tensor): Atomic positions. Shape (N, 3).
+            batch (Tensor, optional): Batch indices for the atoms (atoms in the same molecule have the same batch index). Shape (N,).
+            q (Tensor, optional): Atomic charges in the molecule. Shape (N,).
+            s (Tensor, optional): Atomic spins in the molecule. Shape (N,).
+            extra_args (Dict[str, Tensor], optional): Extra arguments to pass to the prior model.
+        """
+
+        assert z.dim() == 1 and z.dtype == torch.long
+        batch = torch.zeros_like(z) if batch is None else batch
+
+        if self.derivative if isinstance(self.derivative, bool) else any(self.derivative):
+            pos.requires_grad_(True)
+
+        # run the potentially wrapped representation model
+        x, v, z, pos, batch = self.representation_model(z, pos, batch, q=q, s=s)
+
+        # apply the output network
+        y = self.head_model(x, v, z, pos, batch, extra_args)
+        derivative = torch.tensor([self.derivative]*len(y), device="cpu") if isinstance(self.derivative, bool) else torch.tensor(self.derivative)
+        # compute gradients with respect to coordinates
+        if torch.any(derivative):
+            grad_outputs: List[Optional[torch.Tensor]] = [torch.ones_like(yi) if derivative[i] else None for i, yi in enumerate(y)]
+            dy = grad(
+                y,
+                [pos]*len(y),
+                grad_outputs=grad_outputs,
+                create_graph=True,
+                retain_graph=True,
+            )
+            if dy is None:
+                raise RuntimeError("Autograd returned None for the force prediction.")
+
+            neg_dys = [-dyi if derivative[i] else None for i, dyi in enumerate(dy)]
+        else:
+            neg_dys = [None]*len(y)
+        # TODO: return only `out` once Union typing works with TorchScript
+        if len(y) == 1:
+            return y[0], neg_dys[0]
+        return y, neg_dys
+
+
+class SingleOutputHeadModel(nn.Module):
+    """
+    Takes the output of a representation model and returns a list of tensors with either per-atom or per-molecule features.
+    """
+
+    def __init__(self, output_model, prior_model=None, mean=None, std=None, dtype=torch.float32):
+        super(SingleOutputHeadModel, self).__init__()
+
         self.output_model = output_model.to(dtype=dtype)
 
         if not output_model.allow_prior_model and prior_model is not None:
@@ -212,8 +411,6 @@ class TorchMD_Net(nn.Module):
             prior_model = [prior_model]
         self.prior_model = None if prior_model is None else torch.nn.ModuleList(prior_model).to(dtype=dtype)
 
-        self.derivative = derivative
-
         mean = torch.scalar_tensor(0) if mean is None else mean
         self.register_buffer("mean", mean.to(dtype=dtype))
         std = torch.scalar_tensor(1) if std is None else std
@@ -222,48 +419,29 @@ class TorchMD_Net(nn.Module):
         self.reset_parameters()
 
     def reset_parameters(self):
-        self.representation_model.reset_parameters()
         self.output_model.reset_parameters()
         if self.prior_model is not None:
             for prior in self.prior_model:
                 prior.reset_parameters()
 
-    def forward(
-        self,
-        z: Tensor,
-        pos: Tensor,
-        batch: Optional[Tensor] = None,
-        q: Optional[Tensor] = None,
-        s: Optional[Tensor] = None,
-        extra_args: Optional[Dict[str, Tensor]] = None
-    ) -> Tuple[Tensor, Optional[Tensor]]:
-        """Compute the output of the model.
+    def forward(self, x, v, z, pos, batch, extra_args) -> List[Tensor]:
+        """ Compute the output of the model.
         Args:
-            z (Tensor): Atomic numbers of the atoms in the molecule. Shape (N,).
-            pos (Tensor): Atomic positions in the molecule. Shape (N, 3).
-            batch (Tensor, optional): Batch indices for the atoms in the molecule. Shape (N,).
-            q (Tensor, optional): Atomic charges in the molecule. Shape (N,).
-            s (Tensor, optional): Atomic spins in the molecule. Shape (N,).
-            extra_args (Dict[str, Tensor], optional): Extra arguments to pass to the prior model.
+            x (Tensor): Number atomic features. Shape (N, C).
+            v (Tensor): Vector atomic features. Shape (N, 3).
+            z (Tensor): Atomic numbers of the atoms. Shape (N,).
+            pos (Tensor): Atomic positions. Shape (N, 3).
+            batch (Tensor): Batch indices for the atoms. Shape (N,).
         """
 
-        assert z.dim() == 1 and z.dtype == torch.long
-        batch = torch.zeros_like(z) if batch is None else batch
-
-        if self.derivative:
-            pos.requires_grad_(True)
-
-        # run the potentially wrapped representation model
-        x, v, z, pos, batch = self.representation_model(z, pos, batch, q=q, s=s)
-
-        # apply the output network
+        # apply the output network, transforming atom-wise features into another set of per-atom features
         x = self.output_model.pre_reduce(x, v, z, pos, batch)
 
         # scale by data standard deviation
         if self.std is not None:
             x = x * self.std
 
-        # apply atom-wise prior model
+        # apply atom-wise prior model to each output
         if self.prior_model is not None:
             for prior in self.prior_model:
                 x = prior.pre_reduce(x, z, pos, batch, extra_args)
@@ -281,21 +459,79 @@ class TorchMD_Net(nn.Module):
         # apply molecular-wise prior model
         if self.prior_model is not None:
             for prior in self.prior_model:
-                y = prior.post_reduce(y, z, pos, batch, extra_args)
+                y = prior.post_reduce(y, z, pos, batch)
+        return [y]
 
-        # compute gradients with respect to coordinates
-        if self.derivative:
-            grad_outputs: List[Optional[torch.Tensor]] = [torch.ones_like(y)]
-            dy = grad(
-                [y],
-                [pos],
-                grad_outputs=grad_outputs,
-                create_graph=True,
-                retain_graph=True,
-            )[0]
-            if dy is None:
-                raise RuntimeError("Autograd returned None for the force prediction.")
 
-            return y, -dy
-        # TODO: return only `out` once Union typing works with TorchScript (https://github.com/pytorch/pytorch/pull/53180)
-        return y, None
+class MultiOutputHeadModel(nn.Module):
+    """
+    Takes the output of a representation model and returns a list of tensors with per-atom and/or per-molecule features.
+    """
+
+    def __init__(self, output_model, prior_model=None, mean=None, std=None, dtype=torch.float32):
+        super(MultiOutputHeadModel, self).__init__()
+
+        self.output_model = output_model.to(dtype=dtype)
+
+        if not output_model.allow_prior_model and prior_model is not None:
+            prior_model = None
+            rank_zero_warn(
+                (
+                    "Prior model was given but the output model does "
+                    "not allow prior models. Dropping the prior model."
+                )
+            )
+        if isinstance(prior_model, priors.base.BasePrior):
+            prior_model = [prior_model]
+        self.prior_model = None if prior_model is None else torch.nn.ModuleList(prior_model).to(dtype=dtype)
+
+        mean = torch.scalar_tensor(0) if mean is None else mean
+        self.register_buffer("mean", mean.to(dtype=dtype))
+        std = torch.scalar_tensor(1) if std is None else std
+        self.register_buffer("std", std.to(dtype=dtype))
+
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        self.output_model.reset_parameters()
+        if self.prior_model is not None:
+            for prior in self.prior_model:
+                prior.reset_parameters()
+
+    def forward(self, x, v, z, pos, batch, extra_args) -> List[Tensor]:
+        """ Compute the output of the model.
+        Args:
+            x (Tensor): Number atomic features. Shape (N, C).
+            v (Tensor): Vector atomic features. Shape (N, 3).
+            z (Tensor): Atomic numbers of the atoms. Shape (N,).
+            pos (Tensor): Atomic positions. Shape (N, 3).
+            batch (Tensor): Batch indices for the atoms. Shape (N,).
+        """
+
+        # apply the output network, transforming atom-wise features into another set of per-atom features
+        x = self.output_model.pre_reduce(x, v, z, pos, batch)
+
+        # scale by data standard deviation
+        if self.std is not None:
+            x = x * self.std
+
+        # apply atom-wise prior model to each output
+        if self.prior_model is not None:
+            for prior in self.prior_model:
+                x = prior.pre_reduce(x, z, pos, batch, extra_args)
+
+        # aggregate atoms
+        x = self.output_model.reduce(x, batch)
+
+        # shift by data mean
+        if self.mean is not None:
+            x = x + self.mean
+
+        # apply output model after reduction
+        y = self.output_model.post_reduce(x)
+
+        # apply molecular-wise prior model
+        if self.prior_model is not None:
+            for prior in self.prior_model:
+                y = prior.post_reduce(y, z, pos, batch)
+        return [y,y,y]
