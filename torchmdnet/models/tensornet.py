@@ -10,9 +10,11 @@ from torchmdnet.models.utils import (
     act_class_mapping,
 )
 
-torch.set_float32_matmul_precision('high')
+torch.set_float32_matmul_precision('medium')
 torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
 # Creates a skew-symmetric tensor from a vector
+@torch.jit.script
 def vector_to_skewtensor(vector):
     batch_size = vector.size(0)
     zero = torch.zeros(batch_size, device=vector.device, dtype=vector.dtype)
@@ -35,6 +37,7 @@ def vector_to_skewtensor(vector):
 
 
 # Creates a symmetric traceless tensor from the outer product of a vector with itself
+@torch.jit.script
 def vector_to_symtensor(vector):
     tensor = torch.matmul(vector.unsqueeze(-1), vector.unsqueeze(-2))
     I = (tensor.diagonal(offset=0, dim1=-1, dim2=-2)).mean(-1)[
@@ -45,6 +48,7 @@ def vector_to_symtensor(vector):
 
 
 # Full tensor decomposition into irreducible components
+@torch.jit.script
 def decompose_tensor(tensor):
     I = (tensor.diagonal(offset=0, dim1=-1, dim2=-2)).mean(-1)[
         ..., None, None
@@ -55,18 +59,17 @@ def decompose_tensor(tensor):
 
 
 # Modifies tensor by multiplying invariant features to irreducible components
+@torch.jit.script
 def new_radial_tensor(I, A, S, f_I, f_A, f_S):
     # Writing this function without using intermediate tensors breaks CUDA graphs in some cases
-    tempf = f_I[..., None, None]
-    I =  tempf * I
-    tempf = f_A[..., None, None]
-    A = tempf * A
-    tempf = f_S[..., None, None]
-    S = tempf * S
+    I =  f_I[..., None, None] * I
+    A = f_A[..., None, None] * A
+    S = f_S[..., None, None] * S
     return I, A, S
 
 
 # Computes Frobenius norm
+@torch.jit.script
 def tensor_norm(tensor):
     return (tensor**2).sum((-2, -1))
 
@@ -236,7 +239,6 @@ class TensorNet(nn.Module):
         x = self.out_norm(x)
         x = self.act(self.linear((x)))
         return x, None, z, pos, batch
-
 
 class TensorEmbedding(nn.Module):
     def __init__(
