@@ -46,8 +46,12 @@ class GpuTimer:
         self.interval = (self.end - self.start) * 1000  # Convert to milliseconds
 
 
+from torchmdnet.calculators import External
 def benchmark_pdb(pdb_file, **kwargs):
     device = "cuda"
+    # Clear cuda cache
+    torch.cuda.empty_cache()
+
     molecule = Molecule(pdb_file)
     atomic_numbers = torch.tensor(
         [periodictable[symbol].number for symbol in molecule.element],
@@ -64,9 +68,10 @@ def benchmark_pdb(pdb_file, **kwargs):
         config_file="../examples/TensorNet-rMD17.yaml",
         remove_prior=True,
         output_model="Scalar",
-        derivative=False,
+        derivative=True,
         max_z=int(atomic_numbers.max() + 1),
-        max_num_neighbors=32,
+        max_num_neighbors=64,
+        num_rbf=32,
         **kwargs,
     )
     model = create_model(args)
@@ -77,35 +82,25 @@ def benchmark_pdb(pdb_file, **kwargs):
     torch.cuda.nvtx.range_pop()
     torch.cuda.nvtx.range_push("Warmup")
     for i in range(3):
-        pred, _ = model(z, pos, batch)
-        pred.sum().backward()
+        pred, force = model(z, pos, batch)
     torch.cuda.synchronize()
-    model = torch.compile(model, backend="inductor", mode="max-autotune")
+    model = External(model, embeddings=z.unsqueeze(0),device="cuda", use_cuda_graph=True)
     for i in range(10):
-        pred, _ = model(z, pos, batch)
-        pred.sum().backward()
+        pred, force = model.calculate(pos, None)
     torch.cuda.nvtx.range_pop()
     torch.cuda.nvtx.range_push("Benchmark")
     nbench = 100
     times = np.zeros(nbench)
     stream = torch.cuda.Stream()
     torch.cuda.synchronize()
-    with GpuTimer() as timer:
-        with torch.cuda.stream(stream):
-            for i in range(nbench):
-                # torch.cuda.synchronize()
-                # with GpuTimer() as timer2:
-                # torch.cuda.nvtx.range_push("Step")
-                pred, _ = model(z, pos, batch)
-                # torch.cuda.nvtx.range_push("derivative")
-                pred.sum().backward()
-                # torch.cuda.nvtx.range_pop()
-                # torch.cuda.nvtx.range_pop()
-                # torch.cuda.synchronize()
-                # times[i] = timer2.interval
-        torch.cuda.synchronize()
-    # torch.cuda.nvtx.range_pop()
+    with torch.no_grad():
+        with GpuTimer() as timer:
+            with torch.cuda.stream(stream):
+                for i in range(nbench):
+                    pred, force = model.calculate(pos, None)
+            torch.cuda.synchronize()
     return len(atomic_numbers), timer.interval / nbench
+
 
 
 from tabulate import tabulate
@@ -113,6 +108,7 @@ from tabulate import tabulate
 # List of cases to benchmark, arbitrary parameters can be overriden here
 cases = {
     "0L": {"num_layers": 0, "embedding_dimension": 128},
+    "0L emb 64": {"num_layers": 0, "embedding_dimension": 64},
     "1L": {"num_layers": 1, "embedding_dimension": 128},
     "2L": {"num_layers": 2, "embedding_dimension": 128},
     "2L emb 64": {"num_layers": 2, "embedding_dimension": 64},
@@ -131,6 +127,11 @@ def benchmark_all():
             continue
         if pdb_file == "stmv.pdb":  # Does not fit in a 4090
             continue
+        if pdb_file == "factorIX.pdb":  # Does not fit in a 4090
+            continue
+        if pdb_file == "dhfr.pdb":  # Does not fit in a 4090
+            continue
+
         times = {}
         num_atoms = 0
         for name, kwargs in cases.items():
